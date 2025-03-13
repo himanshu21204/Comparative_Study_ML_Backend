@@ -30,6 +30,19 @@ def read_csv_file(file_path):
         except Exception as e:
             raise Exception("Failed to decode CSV file: " + str(e))
 
+def preprocess_data(df):
+    """Handles missing values in the dataset."""
+    df = df.dropna(how='all')  # Drop completely empty rows
+    df = df.dropna(axis=1, how='all')  # Drop completely empty columns
+    
+    numeric_cols = df.select_dtypes(include=['number']).columns
+    df[numeric_cols] = df[numeric_cols].apply(lambda x: x.fillna(x.median()))
+    
+    categorical_cols = df.select_dtypes(include=['object']).columns
+    df[categorical_cols] = df[categorical_cols].apply(lambda x: x.fillna(x.mode()[0] if not x.mode().empty else 'Unknown'))
+    
+    return df
+
 @app.route("/upload", methods=["POST"])
 def upload_file():
     """Handles CSV file upload and returns column names."""
@@ -42,7 +55,7 @@ def upload_file():
     
     try:
         df = read_csv_file(file_path)
-        df = df.dropna(how='all')  # Drop completely empty rows
+        df = preprocess_data(df)
         return jsonify({"columns": df.columns.tolist(), "message": "File uploaded successfully", "filename": file.filename})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -55,6 +68,7 @@ def train_model():
     
     try:
         df = read_csv_file(file_path)
+        df = preprocess_data(df)
         input_cols = data.get("input_cols", [])
         output_col = data.get("output_col", "")
 
@@ -73,11 +87,6 @@ def train_model():
 
         categorical_features = X.select_dtypes(include=['object']).columns.tolist()
         numerical_features = X.select_dtypes(include=[np.number]).columns.tolist()
-
-        for col in numerical_features:
-            X[col] = X[col].fillna(X[col].median())
-        for col in categorical_features:
-            X[col] = X[col].fillna(X[col].mode()[0])
 
         categorical_transformer = Pipeline(steps=[
             ('onehot', OneHotEncoder(handle_unknown='ignore'))
@@ -113,16 +122,22 @@ def train_model():
         }
 
         results = {}
+        best_model = None
+        best_accuracy = float('-inf')
+        
         for name, model in models.items():
             pipeline = Pipeline(steps=[('preprocessor', preprocessor), ('model', model)])
             pipeline.fit(X_train, y_train)
             predictions = pipeline.predict(X_test)
+            
+            accuracy = accuracy_score(y_test, np.round(predictions)) if len(y_test) > 1 else 0
+            results[name] = {"Accuracy": round(accuracy, 4)}
+            
+            if accuracy > best_accuracy:
+                best_accuracy = accuracy
+                best_model = name
 
-            accuracy = accuracy_score(y_test, np.round(predictions)) if len(y_test) > 1 else "N/A"
-
-            results[name] = {"Accuracy": round(accuracy, 4) if isinstance(accuracy, float) else accuracy}
-
-        return jsonify({"results": results})
+        return jsonify({"results": results, "best_model": best_model, "best_accuracy": best_accuracy})
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
